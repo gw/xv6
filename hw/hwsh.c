@@ -1,9 +1,11 @@
 #include <assert.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syslimits.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -39,6 +41,8 @@ struct pipecmd {
 
 int fork1(void); // Fork but exits on failure.
 struct cmd *parsecmd(char *);
+char *get_path(char *);
+int search_dir(char *, char *);
 
 // Execute cmd.  Never returns.
 void runcmd(struct cmd *cmd) {
@@ -59,7 +63,20 @@ void runcmd(struct cmd *cmd) {
     ecmd = (struct execcmd *)cmd;
     if (ecmd->argv[0] == 0)
       exit(0);
-    execv(ecmd->argv[0], ecmd->argv);
+
+    // If program exists in current workdir,
+    // use given relative path. Otherwise,
+    // search all PATH dirs.
+    char *fullpath, *exe, *cwd, *tofree;
+
+    cwd = tofree = malloc(PATH_MAX);
+    getcwd(cwd, PATH_MAX);
+
+    exe = ecmd->argv[0];
+    fullpath = search_dir(cwd, exe) ? exe : get_path(exe);
+
+    free(tofree);
+    execv(fullpath, ecmd->argv);
     break;
 
   case '>':
@@ -77,6 +94,44 @@ void runcmd(struct cmd *cmd) {
     break;
   }
   exit(0);
+}
+
+// Search all folders in PATH for a file named `name`.
+// Returns absolute path to file if found, else `name`.
+char *get_path(char *name) {
+  char *path, *tok, *result;
+
+  path = getenv("PATH");
+  while ((tok = strsep(&path, ":")) != NULL) { // PATH directories
+    if (search_dir(tok, name)) {
+      result = malloc(PATH_MAX);
+      strcat(result, tok);
+      strcat(result, "/");
+      strcat(result, name);
+      return result;
+    }
+  }
+  return name;
+}
+
+// Search a directory `dirname` for an entry with d_name `trgt`.
+// Returns 1 if found else 0.
+int search_dir(char *dirname, char *trgt) {
+  int found;
+  size_t len;
+  DIR *dirp;
+  struct dirent *direntp;
+
+  assert((dirp = opendir(dirname)) != NULL); // Get directory stream DIR *
+
+  found = 0;
+  len = strlen(trgt);
+  while ((direntp = readdir(dirp)) != NULL) { // `dirent`s in stream
+    if (len == direntp->d_namlen && strcmp(trgt, direntp->d_name) == 0) // Match
+      found = 1;
+  }
+  closedir(dirp);
+  return found;
 }
 
 int getcmd(char *buf, int nbuf) {
