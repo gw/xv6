@@ -134,19 +134,25 @@ int search_dir(char *dirname, char *trgt) {
   return found;
 }
 
+// Get a line from STDIN using fgets, copyng at most `nbuf` bytes into `buf`.
+// Returns -1 if fgets doesn't read any bytes for w/e reason, else 0.
 int getcmd(char *buf, int nbuf) {
-
   if (isatty(fileno(stdin)))
     fprintf(stdout, "6.828$ ");
+
+  // Zero-out the buffer and
+  // try to read a line into it.
   memset(buf, 0, nbuf);
-  fgets(buf, nbuf, stdin);
+  fgets(buf, nbuf, stdin); // Blocks until something appears on STDIN
+
   if (buf[0] == 0) // EOF
     return -1;
+
   return 0;
 }
 
 int main(void) {
-  static char buf[100];
+  static char buf[100]; // 1 line of STDIN
   int fd, r;
 
   // Read and run input commands.
@@ -163,6 +169,7 @@ int main(void) {
       runcmd(parsecmd(buf));
     wait(&r);
   }
+  // `fgets` in `getcmd` has received EOF or errored
   exit(0);
 }
 
@@ -175,37 +182,52 @@ int fork1(void) {
   return pid;
 }
 
+// Generate a standard exec command.
+// Returns a pointer to a newly-malloc'd execcmd struct, cast back to a
+// `struct cmd`.
 struct cmd *execcmd(void) {
-  struct execcmd *cmd;
+  struct execcmd *ret;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
-  cmd->type = ' ';
-  return (struct cmd *)cmd;
+  ret = malloc(sizeof(*ret));
+  memset(ret, 0, sizeof(*ret));
+
+  ret->type = ' ';
+
+  return (struct cmd *)ret;
 }
 
+// Generate a file I/O redirect command.
+// Returns a pointer to a newly-malloc'd redircmd struct, cast back to a
+// `struct cmd`.
 struct cmd *redircmd(struct cmd *subcmd, char *file, int type) {
-  struct redircmd *cmd;
+  struct redircmd *ret;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
-  cmd->type = type;
-  cmd->cmd = subcmd;
-  cmd->file = file;
-  cmd->mode = (type == '<') ? O_RDONLY : O_WRONLY | O_CREAT | O_TRUNC;
-  cmd->fd = (type == '<') ? 0 : 1;
-  return (struct cmd *)cmd;
+  ret = malloc(sizeof(*ret));
+  memset(ret, 0, sizeof(*ret));
+
+  ret->type = type;
+  ret->cmd = subcmd;
+  ret->file = file;
+  ret->mode = (type == '<') ? O_RDONLY : O_WRONLY | O_CREAT | O_TRUNC;
+  ret->fd = (type == '<') ? 0 : 1;
+
+  return (struct cmd *)ret;
 }
 
+// Generate a pipe command from two subcommands.
+// Returns a pointer to a newly-malloc'd pipecmd struct, cast back to a
+// `struct cmd`.
 struct cmd *pipecmd(struct cmd *left, struct cmd *right) {
-  struct pipecmd *cmd;
+  struct pipecmd *ret;
 
-  cmd = malloc(sizeof(*cmd));
-  memset(cmd, 0, sizeof(*cmd));
-  cmd->type = '|';
-  cmd->left = left;
-  cmd->right = right;
-  return (struct cmd *)cmd;
+  ret = malloc(sizeof(*ret));
+  memset(ret, 0, sizeof(*ret));
+
+  ret->type = '|';
+  ret->left = left;
+  ret->right = right;
+
+  return (struct cmd *)ret;
 }
 
 // Parsing
@@ -213,58 +235,64 @@ struct cmd *pipecmd(struct cmd *left, struct cmd *right) {
 char whitespace[] = " \t\r\n\v";
 char symbols[] = "<|>";
 
+// Parse the next shell language token in a string.
+// Updates `ps` to point at the start of the next potential token in the string.
+// Updates `q` and `eq` to point to the start and end of the parsed token.
+// Returns '|', '<', '>', or 'a' to represent the token's type, and 0 if end of
+// string is reached before a token is found.
 int gettoken(char **ps, char *es, char **q, char **eq) {
-  char *s;
   int ret;
 
-  s = *ps;
-  while (s < es && strchr(whitespace, *s))
-    s++;
+  while (*ps < es && strchr(whitespace, **ps)) // Remove leading whitespace
+    (*ps)++;
+
   if (q)
-    *q = s;
-  ret = *s;
-  switch (*s) {
-  case 0:
+    *q = *ps; // Start of token
+
+  ret = **ps;
+  switch (**ps) {
+  case 0: // Null-byte (end of string)
     break;
-  case '|':
+  case '|': // Symbols
   case '<':
-    s++;
-    break;
   case '>':
-    s++;
+    (*ps)++;
     break;
-  default:
+  default: // Named command
     ret = 'a';
-    while (s < es && !strchr(whitespace, *s) && !strchr(symbols, *s))
-      s++;
+    // Advance to next whitespace or symbol character
+    while (*ps < es && !strchr(whitespace, **ps) && !strchr(symbols, **ps))
+      (*ps)++;
     break;
   }
-  if (eq)
-    *eq = s;
 
-  while (s < es && strchr(whitespace, *s))
-    s++;
-  *ps = s;
+  if (eq)
+    *eq = *ps; // End of token
+
+  // Remove trailing whitespace
+  while (*ps < es && strchr(whitespace, **ps))
+    (*ps)++;
+
+  printf("Tok: %c\n", ret);
   return ret;
 }
 
+// Advances a string pointer `ps` to the next non-whitespace character.
+// Returns 1 if said character is not `\0` and is in `toks`, else 0.
 int peek(char **ps, char *es, char *toks) {
-  char *s;
-
-  s = *ps;
-  while (s < es && strchr(whitespace, *s))
-    s++;
-  *ps = s;
-  return *s && strchr(toks, *s);
+  while (*ps < es && strchr(whitespace, **ps)) // Ignore whitespace
+    (*ps)++;
+  return **ps && strchr(toks, **ps);
 }
 
 struct cmd *parseline(char **, char *);
 struct cmd *parsepipe(char **, char *);
 struct cmd *parseexec(char **, char *);
+struct cmd *parseredirs(struct cmd *, char **, char *);
 
-// make a copy of the characters in the input buffer, starting from s through
-// es.
-// null-terminate the copy to make it a string.
+// Copy the characters between the pointers `s` and `es` onto the heap.
+// Adds a terminating null-byte.
+// Returns a pointer to the new copy.
 char *mkcopy(char *s, char *es) {
   int n = es - s;
   char *c = malloc(n + 1);
@@ -294,6 +322,10 @@ struct cmd *parseline(char **ps, char *es) {
   return cmd;
 }
 
+// Parse a pipe construct from a string.
+// First parses the leftmost exec command. If that's followed by a pipe, it
+// builds a pipecommand containing the leftmost exec and the result of recursing
+// on the token to the right of the pipe.
 struct cmd *parsepipe(char **ps, char *es) {
   struct cmd *cmd;
 
@@ -305,17 +337,60 @@ struct cmd *parsepipe(char **ps, char *es) {
   return cmd;
 }
 
+// Parse an exec construct from a string.
+// execs can contain multiple redirs.
+struct cmd *parseexec(char **ps, char *es) {
+  char *q, *eq;
+  int toktype, argc;
+  struct execcmd *cmd;
+  struct cmd *ret;
+
+  // Allocate empty execcmd struct
+  ret = execcmd();
+  cmd = (struct execcmd *)ret;
+
+  argc = 0;
+  ret = parseredirs(ret, ps, es);
+  // Keep consuming args until we hit a pipe, checking for a redir at the end of
+  // every iteration.
+  while (!peek(ps, es, "|")) {
+    if ((toktype = gettoken(ps, es, &q, &eq)) == 0)
+      break; // End of string
+    if (toktype != 'a') {
+      fprintf(stderr, "syntax error\n");
+      exit(-1);
+    }
+    cmd->argv[argc++] = mkcopy(q, eq);
+    if (argc >= MAXARGS) {
+      fprintf(stderr, "too many args\n");
+      exit(-1);
+    }
+    ret = parseredirs(ret, ps, es);
+  }
+  cmd->argv[argc] = 0; // Add final NULL arg. See `man 2 exec`
+  return ret;
+}
+
+// Parse file I/O redirection construct from a string.
+// Modifies the given `cmd` if it is part of a redirection, and returns a
+// pointer to it.
 struct cmd *parseredirs(struct cmd *cmd, char **ps, char *es) {
-  int tok;
+  printf("ENTER parseredirs\n");
+  int toktype;
   char *q, *eq;
 
   while (peek(ps, es, "<>")) {
-    tok = gettoken(ps, es, 0, 0);
+    printf("FOUND angle bracket\n");
+    // Next token is angle bracket
+    toktype = gettoken(ps, es, 0, 0); // Consume it
+
     if (gettoken(ps, es, &q, &eq) != 'a') {
+      // Next token after angle bracket is not a filename
       fprintf(stderr, "missing file for redirection\n");
       exit(-1);
     }
-    switch (tok) {
+
+    switch (toktype) {
     case '<':
       cmd = redircmd(cmd, mkcopy(q, eq), '<');
       break;
@@ -325,34 +400,4 @@ struct cmd *parseredirs(struct cmd *cmd, char **ps, char *es) {
     }
   }
   return cmd;
-}
-
-struct cmd *parseexec(char **ps, char *es) {
-  char *q, *eq;
-  int tok, argc;
-  struct execcmd *cmd;
-  struct cmd *ret;
-
-  ret = execcmd();
-  cmd = (struct execcmd *)ret;
-
-  argc = 0;
-  ret = parseredirs(ret, ps, es);
-  while (!peek(ps, es, "|")) {
-    if ((tok = gettoken(ps, es, &q, &eq)) == 0)
-      break;
-    if (tok != 'a') {
-      fprintf(stderr, "syntax error\n");
-      exit(-1);
-    }
-    cmd->argv[argc] = mkcopy(q, eq);
-    argc++;
-    if (argc >= MAXARGS) {
-      fprintf(stderr, "too many args\n");
-      exit(-1);
-    }
-    ret = parseredirs(ret, ps, es);
-  }
-  cmd->argv[argc] = 0; // Add final NULL arg. See `man 2 exec`
-  return ret;
 }
