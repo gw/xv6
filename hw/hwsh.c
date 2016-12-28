@@ -82,15 +82,38 @@ void runcmd(struct cmd *cmd) {
   case '>':
   case '<':
     rcmd = (struct redircmd *)cmd;
-    fprintf(stderr, "redir not implemented\n");
-    // Your code here ...
+
+    close(rcmd->fd);
+    if (open(rcmd->file, rcmd->mode, 0755) < 0)
+      fprintf(stderr, "unable to open file: %s\n", rcmd->file);
+
     runcmd(rcmd->cmd);
     break;
 
   case '|':
     pcmd = (struct pipecmd *)cmd;
-    fprintf(stderr, "pipe not implemented\n");
-    // Your code here ...
+    int p[2];
+
+    if (pipe(p) < 0)
+      fprintf(stderr, "unable to create pipe \n");
+
+    if (fork1() == 0) {
+      dup2(p[1], STDOUT_FILENO);
+      close(p[0]);
+      close(p[1]);
+      runcmd(pcmd->left);
+    }
+
+    if (fork1() == 0) {
+      dup2(p[0], STDIN_FILENO);
+      close(p[0]);
+      close(p[1]);
+      runcmd(pcmd->right);
+    }
+    close(p[0]);
+    close(p[1]);
+    wait(&r);
+    wait(&r);
     break;
   }
   exit(0);
@@ -273,7 +296,6 @@ int gettoken(char **ps, char *es, char **q, char **eq) {
   while (*ps < es && strchr(whitespace, **ps))
     (*ps)++;
 
-  printf("Tok: %c\n", ret);
   return ret;
 }
 
@@ -375,12 +397,10 @@ struct cmd *parseexec(char **ps, char *es) {
 // Modifies the given `cmd` if it is part of a redirection, and returns a
 // pointer to it.
 struct cmd *parseredirs(struct cmd *cmd, char **ps, char *es) {
-  printf("ENTER parseredirs\n");
   int toktype;
   char *q, *eq;
 
   while (peek(ps, es, "<>")) {
-    printf("FOUND angle bracket\n");
     // Next token is angle bracket
     toktype = gettoken(ps, es, 0, 0); // Consume it
 
