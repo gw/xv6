@@ -122,16 +122,42 @@ static int (*syscalls[])(void) = {
 [SYS_mkdir]   = sys_mkdir,
 [SYS_close]   = sys_close,
 };
+
+static char *syscall_strings[] = {
+  [1] = "fork", // In syscall.h, SYS_fork is #define'd as 1
+  "exit",
+  "wait",
+  "pipe",
+  "read",
+  "kill",
+  "exec",
+  "fstat",
+  "chdir",
+  "dup",
+  "getpid",
+  "sbrk",
+  "sleep",
+  "uptime",
+  "open",
+  "write",
+  "mknod",
+  "unlink",
+  "link",
+  "mkdir",
+  "close",
 };
 
 void
 syscall(void)
 {
   int num;
+  int ret;
 
   num = proc->tf->eax;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
-    proc->tf->eax = syscalls[num]();
+    ret = syscalls[num]();
+    proc->tf->eax = ret;
+    cprintf("%s -> %d\n", syscall_strings[num], ret);
   } else {
     cprintf("%d %s: unknown sys call %d\n",
             proc->pid, proc->name, num);
