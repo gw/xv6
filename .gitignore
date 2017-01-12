@@ -16,3 +16,4 @@ kernel
 kernelmemfs
 mkfs
 .gdbinit
+.DS_Store
