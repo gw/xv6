@@ -46,6 +46,7 @@ trap(struct trapframe *tf)
     return;
   }
 
+  char *mem;
   switch(tf->trapno){
   case T_IRQ0 + IRQ_TIMER:
     if(cpunum() == 0){
@@ -76,6 +77,19 @@ trap(struct trapframe *tf)
     cprintf("cpu%d: spurious interrupt at %x:%x\n",
             cpunum(), tf->cs, tf->eip);
     lapiceoi();
+    break;
+  case T_PGFLT:
+    // Check that the PFLA isn't in the guard page below the stack.
+    cprintf("PFLT\n");
+    if ((mem = kalloc()) == 0)
+      panic("page fault handler OOM\n");
+
+    memset(mem, 0, PGSIZE);
+
+    if(mappages(proc->pgdir, (char*)PGROUNDDOWN(rcr2()), PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+      kfree(mem);
+      panic("page fault handler OOM (2)\n");
+    }
     break;
 
   //PAGEBREAK: 13

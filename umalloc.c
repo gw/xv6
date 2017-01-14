@@ -46,7 +46,7 @@ free(void *ap)
 static Header*
 morecore(uint nu)
 {
-  char *p;
+  char *p; // Points to start of new kernel-allocated memory region
   Header *hp;
 
   if(nu < 4096)

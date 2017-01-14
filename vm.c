@@ -66,7 +66,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned.
-static int
+int
 mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
   char *a, *last;
@@ -143,7 +143,7 @@ setupkvm(void)
 }
 
 // Allocate one page table for the machine for the kernel address
-// space for scheduler processes.
+// space for scheduler processes. Called in main.c.
 void
 kvmalloc(void)
 {
@@ -390,4 +390,3 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 // Blank page.
 //PAGEBREAK!
 // Blank page.
-

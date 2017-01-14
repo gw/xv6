@@ -130,6 +130,9 @@ xchg(volatile uint *addr, uint newval)
   return result;
 }
 
+// Get the value of the %cr2 register, which contains the Page Fault Linear
+// Address (PFLA)--the address that a program tried to access when triggering
+// a page fault. https://en.wikipedia.org/wiki/Control_register
 static inline uint
 rcr2(void)
 {
