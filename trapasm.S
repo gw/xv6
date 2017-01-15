@@ -9,7 +9,7 @@ alltraps:
   pushl %fs
   pushl %gs
   pushal
-  
+
   # Set up data and per-cpu segments.
   movw $(SEG_KDATA<<3), %ax
   movw %ax, %ds
@@ -26,10 +26,12 @@ alltraps:
   # Return falls through to trapret...
 .globl trapret
 trapret:
+  # Restore context of running process.
+  # Mirrors lines 7-11 above.
   popal
   popl %gs
   popl %fs
   popl %es
   popl %ds
   addl $0x8, %esp  # trapno and errcode
-  iret
+  iret  # "return from trap"

@@ -99,6 +99,7 @@ extern int sys_wait(void);
 extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_date(void);
+extern int sys_alarm(void);
 
 static int (*syscalls[])(void) = {
 [SYS_fork]    = sys_fork,
@@ -123,32 +124,34 @@ static int (*syscalls[])(void) = {
 [SYS_mkdir]   = sys_mkdir,
 [SYS_close]   = sys_close,
 [SYS_date]    = sys_date,
+[SYS_alarm]   = sys_alarm,
 };
 
-static char *syscall_strings[] = {
-  [1] = "fork", // In syscall.h, SYS_fork is #define'd as 1
-  "exit",
-  "wait",
-  "pipe",
-  "read",
-  "kill",
-  "exec",
-  "fstat",
-  "chdir",
-  "dup",
-  "getpid",
-  "sbrk",
-  "sleep",
-  "uptime",
-  "open",
-  "write",
-  "mknod",
-  "unlink",
-  "link",
-  "mkdir",
-  "close",
-  "date",
-};
+// static char *syscall_strings[] = {
+//   [1] = "fork", // In syscall.h, SYS_fork is #define'd as 1
+//   "exit",
+//   "wait",
+//   "pipe",
+//   "read",
+//   "kill",
+//   "exec",
+//   "fstat",
+//   "chdir",
+//   "dup",
+//   "getpid",
+//   "sbrk",
+//   "sleep",
+//   "uptime",
+//   "open",
+//   "write",
+//   "mknod",
+//   "unlink",
+//   "link",
+//   "mkdir",
+//   "close",
+//   "date",
+//   "alarm",
+// };
 
 void
 syscall(void)
@@ -160,7 +163,7 @@ syscall(void)
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     ret = syscalls[num]();
     proc->tf->eax = ret;
-    cprintf("\n%s -> %x\n", syscall_strings[num], ret);
+    // cprintf("\n%s -> %x\n", syscall_strings[num], ret);
   } else {
     cprintf("%d %s: unknown sys call %d\n",
             proc->pid, proc->name, num);

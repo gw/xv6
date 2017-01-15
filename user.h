@@ -2,6 +2,7 @@ struct stat;
 struct rtcdate;
 
 // system calls
+int alarm(int, void (*)(void));
 int date(struct rtcdate*);
 int fork(void);
 int exit(void) __attribute__((noreturn));

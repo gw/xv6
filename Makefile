@@ -160,6 +160,7 @@ mkfs: mkfs.c fs.h
 .PRECIOUS: %.o
 
 UPROGS=\
+	_alarmtest\
 	_cat\
 	_date\
 	_echo\

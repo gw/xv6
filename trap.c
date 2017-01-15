@@ -55,6 +55,32 @@ trap(struct trapframe *tf)
       wakeup(&ticks);
       release(&tickslock);
     }
+    // Per-process ticking, alarm handling, for sys_alarm.
+    if (proc && (tf->cs & 3) == DPL_USER) {
+      proc->elapsed_ticks++;
+      if (proc->alarm_ticks && proc->elapsed_ticks >= proc->alarm_ticks) {
+        // Trapframe contains the user-prog's eip and esp
+        // at time of interrupt. We modify those values as if
+        // the user-prog had called its alarm handler immediately
+        // before the interrupt. It's hella sketchy to let the kernel
+        // jump to a user-specified address--we should check that it's
+        // within the bounds of the proc's address space.
+
+        // Place the original user-prog return address on
+        // the user's stack, as if the user-prog issued a `call`
+        // instruction.
+        tf->esp -= 4;
+        *(uint*)(tf->esp) = tf->eip;
+
+        // Make trapret return to the alarmhandler instead
+        // of the user-prog. When the alarmhandler calls `ret`,
+        // it will jump to the original user-prog return address
+        // we placed on the stack above.
+        tf->eip = (uint)proc->alarm_fn;
+
+        proc->elapsed_ticks = 0;
+      }
+    }
     lapiceoi();
     break;
   case T_IRQ0 + IRQ_IDE:
@@ -79,8 +105,8 @@ trap(struct trapframe *tf)
     lapiceoi();
     break;
   case T_PGFLT:
-    // Check that the PFLA isn't in the guard page below the stack.
-    cprintf("PFLT\n");
+    // TODO: Check that the PFLA isn't in the guard page below the stack.
+    cprintf("PFLT at: %x\n", rcr2());
     if ((mem = kalloc()) == 0)
       panic("page fault handler OOM\n");
 

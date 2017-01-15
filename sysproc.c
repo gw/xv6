@@ -88,3 +88,19 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int
+sys_alarm(void)
+{
+  int intrvl; // Clock tick interval
+  void (*handler)(); // Callback pointer
+
+  if(argint(0, &intrvl) < 0 || intrvl <= 0)
+    return -1;
+  if(argptr(1, (void*)&handler, sizeof(handler)) < 0)
+    return -1;
+
+  proc->alarm_ticks = intrvl;
+  proc->alarm_fn = handler;
+  return 0;
+}
