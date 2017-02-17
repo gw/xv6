@@ -18,8 +18,7 @@ struct entry *table[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
 volatile int done;
-pthread_mutex_t lock;
-
+pthread_mutex_t locks[NBUCKET];
 
 double
 now()
@@ -44,22 +43,22 @@ print(void)
 }
 
 static void
-insert(int key, int value, struct entry **p)
+insert(int key, int value, int bucket, struct entry **p)
 {
   struct entry *e = malloc(sizeof(struct entry));
   e->key = key;
   e->value = value;
-  pthread_mutex_lock(&lock);
+  pthread_mutex_lock(&locks[bucket]);
   e->next = *p;
   *p = e;
-  pthread_mutex_unlock(&lock);
+  pthread_mutex_unlock(&locks[bucket]);
 }
 
 static
 void put(int key, int value)
 {
   int i = key % NBUCKET;
-  insert(key, value, &table[i]);
+  insert(key, value, i, &table[i]);
 }
 
 static struct entry*
@@ -117,8 +116,10 @@ main(int argc, char *argv[])
     fprintf(stderr, "%s: %s nthread\n", argv[0], argv[0]);
     exit(-1);
   }
-  // Init mutex
-  pthread_mutex_init(&lock, NULL);
+  // Init locks
+  for (i = 0; i < NBUCKET; i++) {
+    pthread_mutex_init(&locks[i], NULL);
+  }
 
   // Allocate threadpool
   nthread = atoi(argv[1]);
