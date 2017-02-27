@@ -24,7 +24,16 @@ initlock(struct spinlock *lk, char *name)
 void
 acquire(struct spinlock *lk)
 {
-  pushcli(); // disable interrupts to avoid deadlock.
+  // Disable interrupts to avoid deadlock. Really
+  // only necessary to protect locks that may be
+  // acquired by an ISR (to avoid the deadlock
+  // that would occur if you were interrupted in
+  // a crit-sect by an ISR that wanted your held
+  // lock and couldn't release the lock
+  // until the ISR returned.) XV6 takes a
+  // conservative approach and disables interrupts
+  // when acquiring any spinlock.
+  pushcli();
   if(holding(lk))
     panic("acquire");
 
@@ -33,8 +42,13 @@ acquire(struct spinlock *lk)
     ;
 
   // Tell the C compiler and the processor to not move loads or stores
-  // past this point, to ensure that the critical section's memory
-  // references happen after the lock is acquired.
+  // past this point, to ensure that all the stores in the critical
+  // section are visible to other cores before the lock is released.
+  // Both the C compiler and the hardware may re-order loads and
+  // stores; __sync_synchronize() introduces a guard rail for that.
+  // This ensures that lock acquire/release instructions always
+  // correctly book-end critical-section instructions.
+  // See p. 56 of the xv6 manual.
   __sync_synchronize();
 
   // Record info about lock acquisition for debugging.
@@ -52,11 +66,6 @@ release(struct spinlock *lk)
   lk->pcs[0] = 0;
   lk->cpu = 0;
 
-  // Tell the C compiler and the processor to not move loads or stores
-  // past this point, to ensure that all the stores in the critical
-  // section are visible to other cores before the lock is released.
-  // Both the C compiler and the hardware may re-order loads and
-  // stores; __sync_synchronize() tells them both not to.
   __sync_synchronize();
 
   // Release the lock, equivalent to lk->locked = 0.
@@ -64,7 +73,7 @@ release(struct spinlock *lk)
   // not be atomic. A real OS would use C atomics here.
   asm volatile("movl $0, %0" : "+m" (lk->locked) : );
 
-  popcli();
+  popcli();  // Re-enable interrupts
 }
 
 // Record the current call stack in pcs[] by following the %ebp chain.
@@ -119,4 +128,3 @@ popcli(void)
   if(cpu->ncli == 0 && cpu->intena)
     sti();
 }
-
