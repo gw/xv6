@@ -71,6 +71,9 @@ release(struct spinlock *lk)
   // Release the lock, equivalent to lk->locked = 0.
   // This code can't use a C assignment, since it might
   // not be atomic. A real OS would use C atomics here.
+  // TODO: Couldn't you juse use `xchg` here like in
+  // acquire, and just ignore the return value? Maybe
+  // that's more expensive...
   asm volatile("movl $0, %0" : "+m" (lk->locked) : );
 
   popcli();  // Re-enable interrupts
@@ -87,7 +90,7 @@ getcallerpcs(void *v, uint pcs[])
   for(i = 0; i < 10; i++){
     if(ebp == 0 || ebp < (uint*)KERNBASE || ebp == (uint*)0xffffffff)
       break;
-    pcs[i] = ebp[1];     // saved %eip
+    pcs[i] = ebp[1];     // saved %eip (ebp + word_size is always return address)
     ebp = (uint*)ebp[0]; // saved %ebp
   }
   for(; i < 10; i++)

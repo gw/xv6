@@ -9,6 +9,7 @@
 #include "spinlock.h"
 #include "sleeplock.h"
 #include "file.h"
+// #include "x86.h"  // For HW6, locks
 
 struct devsw devsw[NDEV];
 struct {
@@ -29,13 +30,16 @@ filealloc(void)
   struct file *f;
 
   acquire(&ftable.lock);
+  // sti();  // For HW6
   for(f = ftable.file; f < ftable.file + NFILE; f++){
     if(f->ref == 0){
       f->ref = 1;
+      // cli();  // For HW6
       release(&ftable.lock);
       return f;
     }
   }
+  // cli();  // For HW6
   release(&ftable.lock);
   return 0;
 }
@@ -154,4 +158,3 @@ filewrite(struct file *f, char *addr, int n)
   }
   panic("filewrite");
 }
-
