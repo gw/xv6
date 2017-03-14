@@ -21,6 +21,7 @@ tvinit(void)
 
   for(i = 0; i < 256; i++)
     SETGATE(idt[i], 0, SEG_KCODE<<3, vectors[i], 0);
+  // User syscalls get the user DPL; see xv6 book p. 42
   SETGATE(idt[T_SYSCALL], 1, SEG_KCODE<<3, vectors[T_SYSCALL], DPL_USER);
 
   initlock(&tickslock, "time");
@@ -136,7 +137,7 @@ trap(struct trapframe *tf)
 
   // Force process exit if it has been killed and is in user space.
   // (If it is still executing in the kernel, let it keep running
-  // until it gets to the regular system call return.)
+  // until it gets to the regular system call return on line 44 above.)
   if(proc && proc->killed && (tf->cs&3) == DPL_USER)
     exit();
 
@@ -145,7 +146,7 @@ trap(struct trapframe *tf)
   if(proc && proc->state == RUNNING && tf->trapno == T_IRQ0+IRQ_TIMER)
     yield();
 
-  // Check if the process has been killed since we yielded
+  // Check again if the process has been killed since we yielded
   if(proc && proc->killed && (tf->cs&3) == DPL_USER)
     exit();
 }

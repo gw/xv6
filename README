@@ -2,6 +2,13 @@ xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
 Version 6 (v6).  xv6 loosely follows the structure and style of v6,
 but is implemented for a modern x86-based multiprocessor using ANSI C.
 
+PROJECT IDEAS
+- Replace round-robin scheduler with MLFQ-based scheduler
+- Swap out spinlock for something more efficient that doesn't waste quanta and prevents starvation.
+- Implement a user-level condition variable library
+- Implement a user-level semaphore library using the lock and CV
+- Refactor sleep/wakeup to use a list of procs to wakeup instead of `chan`, a ala Plan 9's `Rendez`.
+
 ACKNOWLEDGMENTS
 
 xv6 is inspired by John Lions's Commentary on UNIX 6th Edition (Peer

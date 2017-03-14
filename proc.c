@@ -7,6 +7,38 @@
 #include "proc.h"
 #include "spinlock.h"
 
+
+/*
+From: https://pdos.csail.mit.edu/6.828/2016/lec/l-threadsv1.md
+## Process
+
+Process
+  an abstract virtual machine, as if it had its own CPU and memory,
+    not accidentally affected by other processes.
+  motivated by isolation
+
+Process API:
+  fork
+  exec
+  exit
+  wait
+  kill
+  sbrk
+  getpid
+
+Challenge: more processes than processors
+  xv6 picture:
+    1 user thread and 1 kernel thread per process
+    1 scheduler thread per processor
+    n processors
+
+Terms
+  a process: address space plus one or more threads
+  a thread: thread of execution, identified by register state and stack
+  kernel thread: thread running in kernel mode
+  user thread: thread running in user mode
+*/
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -183,6 +215,12 @@ fork(void)
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait() to find out it exited.
+// wait() does final cleanup--stack, pagetable, proc[]
+// slot. We can't do those things here because the
+// exiting process is still running. They have to happen
+// after entering the scheduler, at which point ZOMBIE
+// procs are guaranteed to not run again and can be safely
+// cleaned up.
 void
 exit(void)
 {
@@ -208,6 +246,11 @@ exit(void)
   acquire(&ptable.lock);
 
   // Parent might be sleeping in wait().
+  // This may seem premature as this thread
+  // has not yet been marked ZOMBIE, but remember,
+  // `acquire` disables interrupts, so no
+  // other thread can be scheduled until
+  // this one explicitly enters the scheduler.
   wakeup1(proc->parent);
 
   // Pass abandoned children to init.
@@ -225,8 +268,10 @@ exit(void)
   panic("zombie exit");
 }
 
-// Wait for a child process to exit and return its pid.
+// Wait for a child process to exit, clean it up,
+// and return its pid.
 // Return -1 if this process has no children.
+// See p. 69 of the xv6 manual.
 int
 wait(void)
 {
@@ -242,7 +287,7 @@ wait(void)
         continue;
       havekids = 1;
       if(p->state == ZOMBIE){
-        // Found one.
+        // Found one. Free stack, pagetable, and ptable.proc[] slot
         pid = p->pid;
         kfree(p->kstack);
         p->kstack = 0;
@@ -269,20 +314,36 @@ wait(void)
 }
 
 //PAGEBREAK: 42
-// Per-CPU process scheduler.
+// Per-CPU process scheduler. Has own context, b/c
+// if it didn't, freeing p->kstack in wait would
+// destroy the scheduler context.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
 //  - choose a process to run
 //  - swtch to start running that process
 //  - eventually that process transfers control
 //      via swtch back to the scheduler.
+// See p. 62 of xv6 manual.
+
+// One scheduler thread per processor simplifies implementation
+//    Need a stack to run scheduler on, if there are no other threads
+// Downside: more switches
+//    To switch from one thread to another requires two switches
+//    thread 1 -> scheduler -> thread 2
 void
 scheduler(void)
 {
   struct proc *p;
 
   for(;;){
-    // Enable interrupts on this processor.
+    // Enable interrupts on this processor. This, (and
+    // the release() call below) is important for when
+    // the CPU is idle (can find no RUNNABLE proc) and
+    // loops continuously. If it held the lock and looped,
+    // no other CPU can do any proc-related work, such
+    // as marking a proc RUNNABLE so as to de-idle this
+    // CPU. Further, procs may be waiting for I/O, in
+    // which case interrupts had better be on.
     sti();
 
     // Loop over process table looking for process to run.
@@ -291,13 +352,14 @@ scheduler(void)
       if(p->state != RUNNABLE)
         continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
+      // Switch to chosen process. Important: It is
+      // the process's job to release ptable.lock
+      // and then reacquire it before jumping back to us.
       proc = p;
       switchuvm(p);
       p->state = RUNNING;
       swtch(&cpu->scheduler, p->context);
+      // sched()'s `swtch` usually enters here
       switchkvm();
 
       // Process is done running for now.
@@ -305,7 +367,6 @@ scheduler(void)
       proc = 0;
     }
     release(&ptable.lock);
-
   }
 }
 
@@ -316,6 +377,9 @@ scheduler(void)
 // be proc->intena and proc->ncli, but that would
 // break in the few places where a lock is held but
 // there's no process.
+// `sched` and `scheduler` are coroutines of each other--
+// that is, they aren't transparent to each other.
+// See p. 61 of xv6 manual
 void
 sched(void)
 {
@@ -330,7 +394,12 @@ sched(void)
   if(readeflags()&FL_IF)
     panic("sched interruptible");
   intena = cpu->intena;
+  // Save current kernel thread state and switch
+  // to scheduler thread
   swtch(&proc->context, cpu->scheduler);
+  // scheduler()'s `swtch` always enters here
+  // except for the first process, which enters
+  // at `forkret`
   cpu->intena = intena;
 }
 
@@ -340,12 +409,15 @@ yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
   proc->state = RUNNABLE;
-  sched();
+  sched();  // Enter scheduler
+  // Returns here when scheduled again
   release(&ptable.lock);
 }
 
 // A fork child's very first scheduling by scheduler()
 // will swtch here.  "Return" to user space.
+// Exists to release ptable.lock. Otherwise new process
+// could start at `trapret`. See p. 62 of xv6 manual.
 void
 forkret(void)
 {
@@ -366,7 +438,10 @@ forkret(void)
 }
 
 // Atomically release lock and sleep on chan.
+// Analogous to `pthread_cond_wait()`. `chan`
+// here is basically a condition variable.
 // Reacquires lock when awakened.
+// See p. 66 of xv6 manual
 void
 sleep(void *chan, struct spinlock *lk)
 {
@@ -405,6 +480,8 @@ sleep(void *chan, struct spinlock *lk)
 //PAGEBREAK!
 // Wake up all processes sleeping on chan.
 // The ptable lock must be held.
+// Exists b/c scheduler must sometimes
+// wakeup a proc when it already holds ptable.lock
 static void
 wakeup1(void *chan)
 {
@@ -416,6 +493,10 @@ wakeup1(void *chan)
 }
 
 // Wake up all processes sleeping on chan.
+// Must already hold the relevant condition
+// lock to avoid the wakeup/sleep race.
+// Analogous to `pthread_cond_signal()`, with
+// `chan` as the condition variable.
 void
 wakeup(void *chan)
 {
@@ -427,6 +508,10 @@ wakeup(void *chan)
 // Kill the process with the given pid.
 // Process won't exit until it returns
 // to user space (see trap in trap.c).
+// Important that we make the process
+// kill itself (when returning from `trap()`)
+// b/c it might be in the middle of something or
+// holding locks, etc.
 int
 kill(int pid)
 {

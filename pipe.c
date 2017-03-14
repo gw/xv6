@@ -13,8 +13,8 @@
 struct pipe {
   struct spinlock lock;
   char data[PIPESIZE];
-  uint nread;     // number of bytes read
-  uint nwrite;    // number of bytes written
+  uint nread;     // number of bytes read. Used as condition variable.
+  uint nwrite;    // number of bytes written. Used as condition variable.
   int readopen;   // read fd is still open
   int writeopen;  // write fd is still open
 };
@@ -104,12 +104,14 @@ piperead(struct pipe *p, char *addr, int n)
 
   acquire(&p->lock);
   while(p->nread == p->nwrite && p->writeopen){  //DOC: pipe-empty
+    // Buffer empty but there's still a writer
     if(proc->killed){
       release(&p->lock);
       return -1;
     }
     sleep(&p->nread, &p->lock); //DOC: piperead-sleep
   }
+  // Buffer non-empty or no one's writing anymore
   for(i = 0; i < n; i++){  //DOC: piperead-copy
     if(p->nread == p->nwrite)
       break;
