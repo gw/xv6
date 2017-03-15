@@ -14,16 +14,18 @@ typedef struct thread thread_t, *thread_p;
 typedef struct mutex mutex_t, *mutex_p;
 
 struct thread {
-  int        sp;                /* curent stack pointer */
+  int        sp;                /* current stack pointer */
   char stack[STACK_SIZE];       /* the thread's stack */
   int        state;             /* FREE, RUNNING, RUNNABLE */
 };
+extern void thread_switch(void);
+
+// These end up in the .bss segment of the binary
 static thread_t all_thread[MAX_THREAD];
 thread_p  current_thread;
 thread_p  next_thread;
-extern void thread_switch(void);
 
-void 
+void
 thread_init(void)
 {
   // main() is thread 0, which will make the first invocation to
@@ -35,12 +37,12 @@ thread_init(void)
   current_thread->state = RUNNING;
 }
 
-static void 
+static void
 thread_schedule(void)
 {
   thread_p t;
 
-  /* Find another runnable thread. */
+  /* Find the next runnable thread. */
   next_thread = 0;
   for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
     if (t->state == RUNNABLE && t != current_thread) {
@@ -66,7 +68,14 @@ thread_schedule(void)
     next_thread = 0;
 }
 
-void 
+/**
+Loop through all threads, stopping at the first
+FREE thread, setting up its stack for thread_switch,
+inserting the address of the `mythread` function as
+a fake "return address" for thread_switch to jump to,
+and marking it RUNNABLE.
+*/
+void
 thread_create(void (*func)())
 {
   thread_p t;
@@ -77,18 +86,18 @@ thread_create(void (*func)())
   t->sp = (int) (t->stack + STACK_SIZE);   // set sp to the top of the stack
   t->sp -= 4;                              // space for return address
   * (int *) (t->sp) = (int)func;           // push return address on stack
-  t->sp -= 32;                             // space for registers that thread_switch expects
+  t->sp -= 32;                             // 32 bits expected by `popal` in uthread_switch
   t->state = RUNNABLE;
 }
 
-void 
+void
 thread_yield(void)
 {
   current_thread->state = RUNNABLE;
   thread_schedule();
 }
 
-static void 
+static void
 mythread(void)
 {
   int i;
@@ -103,8 +112,8 @@ mythread(void)
 }
 
 
-int 
-main(int argc, char *argv[]) 
+int
+main(int argc, char *argv[])
 {
   thread_init();
   thread_create(mythread);
