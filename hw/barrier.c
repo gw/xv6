@@ -4,16 +4,18 @@
 #include <assert.h>
 #include <pthread.h>
 
+// HW 8
+// Description: https://pdos.csail.mit.edu/6.828/2016/homework/barrier.html
+
 // #define SOL
 
 static int nthread = 1;
-static int round = 0;
 
 struct barrier {
   pthread_mutex_t barrier_mutex;
   pthread_cond_t barrier_cond;
   int nthread;      // Number of threads that have reached this round of the barrier
-  int round;     // Barrier round
+  int round;        // Barrier round
 } bstate;
 
 static void
@@ -22,19 +24,35 @@ barrier_init(void)
   assert(pthread_mutex_init(&bstate.barrier_mutex, NULL) == 0);
   assert(pthread_cond_init(&bstate.barrier_cond, NULL) == 0);
   bstate.nthread = 0;
+  bstate.round = 0;
 }
 
 static void
 barrier()
 {
-  bstate.round++;
+  pthread_mutex_lock(&bstate.barrier_mutex);
+
+  bstate.nthread++;
+
+  if (bstate.nthread < nthread)
+    // Early to the round--wait for others
+    pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
+  else {
+    // Last one to the round. Round is finished.
+    // Incr round, reset thread count and wake others.
+    bstate.round++;
+    bstate.nthread = 0;
+    pthread_cond_broadcast(&bstate.barrier_cond);
+  }
+
+  // In both cases, release mutex--
+  // wait() returns with the lock held.
+  pthread_mutex_unlock(&bstate.barrier_mutex);
 }
 
 static void *
 thread(void *xa)
 {
-  long n = (long) xa;
-  long delay;
   int i;
 
   for (i = 0; i < 20000; i++) {
@@ -51,7 +69,6 @@ main(int argc, char *argv[])
   pthread_t *tha;
   void *value;
   long i;
-  double t1, t0;
 
   if (argc < 2) {
     fprintf(stderr, "%s: %s nthread\n", argv[0], argv[0]);
