@@ -55,8 +55,9 @@ binit(void)
   }
 }
 
-// Look through buffer cache for block on device dev.
-// If not found, allocate a buffer.
+// Look through buffer cache for the block on device `dev`
+// with block number `blockno`.
+// If not found, allocate a buffer for `bread` to fill.
 // In either case, return locked buffer.
 static struct buf*
 bget(uint dev, uint blockno)
@@ -136,9 +137,8 @@ brelse(struct buf *b)
     bcache.head.next->prev = b;
     bcache.head.next = b;
   }
-  
+
   release(&bcache.lock);
 }
 //PAGEBREAK!
 // Blank page.
-

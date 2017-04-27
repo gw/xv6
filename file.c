@@ -1,5 +1,5 @@
 //
-// File descriptors
+// File descriptors (aka struct files)
 //
 
 #include "types.h"
@@ -23,7 +23,7 @@ fileinit(void)
   initlock(&ftable.lock, "ftable");
 }
 
-// Allocate a file structure.
+// Allocate a file structure in the global open-file table.
 struct file*
 filealloc(void)
 {
@@ -69,11 +69,13 @@ fileclose(struct file *f)
     release(&ftable.lock);
     return;
   }
+  // Refcount is now 0
   ff = *f;
   f->ref = 0;
   f->type = FD_NONE;
   release(&ftable.lock);
 
+  // Clean up if pipe or inode
   if(ff.type == FD_PIPE)
     pipeclose(ff.pipe, ff.writable);
   else if(ff.type == FD_INODE){
@@ -143,6 +145,7 @@ filewrite(struct file *f, char *addr, int n)
 
       begin_op();
       ilock(f->ip);
+      // writei also writes to the transaction log
       if ((r = writei(f->ip, addr + i, f->off, n1)) > 0)
         f->off += r;
       iunlock(f->ip);

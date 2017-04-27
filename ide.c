@@ -1,4 +1,4 @@
-// Simple PIO-based (non-DMA) IDE driver code.
+// Simple PIO-based (non-DMA) interrupt-driven IDE driver code.
 
 #include "types.h"
 #include "defs.h"
@@ -24,6 +24,9 @@
 #define IDE_CMD_RDMUL 0xc4
 #define IDE_CMD_WRMUL 0xc5
 
+#define IDE_REG_STATUS 0x1F7  // Status register
+#define IDE_REG_CTRL 0x3F6  // Control register
+
 // idequeue points to the buf now being read/written to the disk.
 // idequeue->qnext points to the next buf to be processed.
 // You must hold idelock while manipulating queue.
@@ -40,7 +43,7 @@ idewait(int checkerr)
 {
   int r;
 
-  while(((r = inb(0x1f7)) & (IDE_BSY|IDE_DRDY)) != IDE_DRDY)
+  while(((r = inb(IDE_REG_STATUS)) & (IDE_BSY|IDE_DRDY)) != IDE_DRDY)
     ;
   if(checkerr && (r & (IDE_DF|IDE_ERR)) != 0)
     return -1;
@@ -60,7 +63,7 @@ ideinit(void)
   // Check if disk 1 is present
   outb(0x1f6, 0xe0 | (1<<4));
   for(i=0; i<1000; i++){
-    if(inb(0x1f7) != 0){
+    if(inb(IDE_REG_STATUS) != 0){
       havedisk1 = 1;
       break;
     }
@@ -86,17 +89,19 @@ idestart(struct buf *b)
   if (sector_per_block > 7) panic("idestart");
 
   idewait(0);
-  outb(0x3f6, 0);  // generate interrupt
+  outb(IDE_REG_CTRL, 0);  // generate interrupt
   outb(0x1f2, sector_per_block);  // number of sectors
-  outb(0x1f3, sector & 0xff);
-  outb(0x1f4, (sector >> 8) & 0xff);
-  outb(0x1f5, (sector >> 16) & 0xff);
+  outb(0x1f3, sector & 0xff);  // LBA (logical block address)low byte
+  outb(0x1f4, (sector >> 8) & 0xff);  // LBA mid byte
+  outb(0x1f5, (sector >> 16) & 0xff);  // LBA hi byte
   outb(0x1f6, 0xe0 | ((b->dev&1)<<4) | ((sector>>24)&0x0f));
   if(b->flags & B_DIRTY){
-    outb(0x1f7, write_cmd);
+    // Flush
+    outb(IDE_REG_STATUS, write_cmd);
     outsl(0x1f0, b->data, BSIZE/4);
   } else {
-    outb(0x1f7, read_cmd);
+    // Just read
+    outb(IDE_REG_STATUS, read_cmd);
   }
 }
 
@@ -132,7 +137,7 @@ ideintr(void)
 }
 
 //PAGEBREAK!
-// Sync buf with disk.
+// Sync cached buffer with disk.
 // If B_DIRTY is set, write buf to disk, clear B_DIRTY, set B_VALID.
 // Else if B_VALID is not set, read buf from disk, set B_VALID.
 void

@@ -1,3 +1,6 @@
+// This is what a file descriptor refers to.
+// These all live in the global open file table
+// ftable--see file.c
 struct file {
   enum { FD_NONE, FD_PIPE, FD_INODE } type;
   int ref; // reference count

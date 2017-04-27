@@ -60,7 +60,7 @@ struct proc {
   struct context *context;     // swtch() here to run process
   void *chan;                  // If non-zero, sleeping on chan
   int killed;                  // If non-zero, have been killed
-  struct file *ofile[NOFILE];  // Open files
+  struct file *ofile[NOFILE];  // Open files--array of pointers to struct files. FDs index into this.
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   int elapsed_ticks;

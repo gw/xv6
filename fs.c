@@ -25,7 +25,7 @@
 static void itrunc(struct inode*);
 // there should be one superblock per disk device, but we run with
 // only one device
-struct superblock sb; 
+struct superblock sb;
 
 // Read the super block.
 void
@@ -112,7 +112,9 @@ bfree(int dev, uint b)
 // inodes include book-keeping information that is
 // not stored on disk: ip->ref and ip->flags.
 //
-// An inode and its in-memory represtative go through a
+//  All uses of struct ip* refer to an entry in this inode cache.
+//
+// An inode and its in-memory representative go through a
 // sequence of states before they can be used by the
 // rest of the file system code.
 //
@@ -138,8 +140,8 @@ bfree(int dev, uint b)
 //   has first locked the inode.
 //
 // Thus a typical sequence is:
-//   ip = iget(dev, inum)
-//   ilock(ip)
+//   ip = iget(dev, inum)  // get icache reference
+//   ilock(ip)             // load data from disk
 //   ... examine and modify ip->xxx ...
 //   iunlock(ip)
 //   iput(ip)
@@ -164,12 +166,12 @@ void
 iinit(int dev)
 {
   int i = 0;
-  
+
   initlock(&icache.lock, "icache");
   for(i = 0; i < NINODE; i++) {
     initsleeplock(&icache.inode[i].lock, "inode");
   }
-  
+
   readsb(dev, &sb);
   cprintf("sb: size %d nblocks %d ninodes %d nlog %d logstart %d\
  inodestart %d bmap start %d\n", sb.size, sb.nblocks,
@@ -195,7 +197,7 @@ ialloc(uint dev, short type)
     if(dip->type == 0){  // a free inode
       memset(dip, 0, sizeof(*dip));
       dip->type = type;
-      log_write(bp);   // mark it allocated on the disk
+      log_write(bp);   // mark it allocated and dirty in the buffer cache
       brelse(bp);
       return iget(dev, inum);
     }
@@ -204,14 +206,17 @@ ialloc(uint dev, short type)
   panic("ialloc: no inodes");
 }
 
-// Copy a modified in-memory inode to disk.
+// Copy a modified in-memory inode to disk via the log.
 void
 iupdate(struct inode *ip)
 {
   struct buf *bp;
   struct dinode *dip;
 
+  // Get the on-disk inode contents into the
+  // buffer cache
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
+
   dip = (struct dinode*)bp->data + ip->inum%IPB;
   dip->type = ip->type;
   dip->major = ip->major;
@@ -223,9 +228,13 @@ iupdate(struct inode *ip)
   brelse(bp);
 }
 
-// Find the inode with number inum on device dev
-// and return the in-memory copy. Does not lock
-// the inode and does not read it from disk.
+// Get the icache entry for an inode, or an empty
+// cache entry if it's not in there, containing the
+// desired inum and ready to be populated with `ilock`.
+// Does not lock the inode and does not read it from disk,
+// to avoid deadlocks when using dirlookup, and to allow
+// code to have long-running, non-exclusive references
+// to inodes.
 static struct inode*
 iget(uint dev, uint inum)
 {
@@ -393,6 +402,7 @@ itrunc(struct inode *ip)
   struct buf *bp;
   uint *a;
 
+  // Free direct blocks
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -400,6 +410,7 @@ itrunc(struct inode *ip)
     }
   }
 
+  // Free indirect blocks
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
@@ -408,7 +419,7 @@ itrunc(struct inode *ip)
         bfree(ip->dev, a[j]);
     }
     brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT]);
+    bfree(ip->dev, ip->addrs[NDIRECT]);  // Free the indirect block itself
     ip->addrs[NDIRECT] = 0;
   }
 
@@ -428,7 +439,8 @@ stati(struct inode *ip, struct stat *st)
 }
 
 //PAGEBREAK!
-// Read data from inode.
+// Read data from a file into *dst via the file's
+// inode.
 int
 readi(struct inode *ip, char *dst, uint off, uint n)
 {
@@ -463,7 +475,8 @@ readi(struct inode *ip, char *dst, uint off, uint n)
 }
 
 // PAGEBREAK!
-// Write data to inode.
+// Write to a file via the transaction log, through the
+// the file's inode.
 int
 writei(struct inode *ip, char *src, uint off, uint n)
 {
@@ -482,7 +495,12 @@ writei(struct inode *ip, char *src, uint off, uint n)
     return -1;
 
   for(tot=0; tot<n; tot+=m, off+=m, src+=m){
-    bp = bread(ip->dev, bmap(ip, off/BSIZE));
+    bp = bread(ip->dev, bmap(ip, off/BSIZE));  // Round offset down to nearest block
+    // m is the smallest of 1) num bytes
+    // to n and 2) num bytes to next disk block.
+    // Thus, in each iteration, we're copying
+    // data in a block-aligned fashion until the
+    // last iteration, which aligns with n.
     m = min(n - tot, BSIZE - off%BSIZE);
     memmove(bp->data + off%BSIZE, src, m);
     log_write(bp);
@@ -490,6 +508,7 @@ writei(struct inode *ip, char *src, uint off, uint n)
   }
 
   if(n > 0 && off > ip->size){
+    // File grew--update metadata
     ip->size = off;
     iupdate(ip);
   }
@@ -506,34 +525,49 @@ namecmp(const char *s, const char *t)
 }
 
 // Look for a directory entry in a directory.
-// If found, set *poff to byte offset of entry.
+// If found, set *poff to byte offset of entry
+// within the parent directory, and return the unlocked
+// inode corresponding to the found directory entry.
+// Otherwise return 0.
+
+// This function is the reason why iget returns
+// an unlocked icache reference instead of a locked
+// and populated inode. The caller of this function has
+// locked `dp`--if they were searching for '.', we'd
+// try to re-acquire a held lock, resulting in deadlock.
+// Other more complicated situations are possible involving
+// '..'. See `namex`.
+
+// If caller wants to read/write the target inode, they
+// should unlock dp and then lock the new inode.
 struct inode*
 dirlookup(struct inode *dp, char *name, uint *poff)
 {
-  uint off, inum;
+  uint off;
   struct dirent de;
 
   if(dp->type != T_DIR)
     panic("dirlookup not DIR");
 
+  // Read each dirent and match on the name string
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
-      panic("dirlink read");
+      panic("dirlookup read");
     if(de.inum == 0)
       continue;
     if(namecmp(name, de.name) == 0){
       // entry matches path element
       if(poff)
         *poff = off;
-      inum = de.inum;
-      return iget(dp->dev, inum);
+      return iget(dp->dev, de.inum);
     }
   }
 
   return 0;
 }
 
-// Write a new directory entry (name, inum) into the directory dp.
+// Write a new directory entry (name, inum) into the directory dp,
+// growing dp if necessary. This is a "hard link".
 int
 dirlink(struct inode *dp, char *name, uint inum)
 {
@@ -584,11 +618,14 @@ skipelem(char *path, char *name)
   char *s;
   int len;
 
+  // Leading slashes
   while(*path == '/')
     path++;
+  // End of string
   if(*path == 0)
     return 0;
   s = path;
+  // Non-slash, non-zero characters
   while(*path != '/' && *path != 0)
     path++;
   len = path - s;
@@ -598,6 +635,7 @@ skipelem(char *path, char *name)
     memmove(name, s, len);
     name[len] = 0;
   }
+  // Trailing slashes
   while(*path == '/')
     path++;
   return path;
@@ -607,6 +645,7 @@ skipelem(char *path, char *name)
 // If parent != 0, return the inode for the parent and copy the final
 // path element into name, which must have room for DIRSIZ bytes.
 // Must be called inside a transaction since it calls iput().
+// Returns 0 on error
 static struct inode*
 namex(char *path, int nameiparent, char *name)
 {
@@ -617,6 +656,8 @@ namex(char *path, int nameiparent, char *name)
   else
     ip = idup(proc->cwd);
 
+  // Iterate through path tokens, saving them
+  // to `name`
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
     if(ip->type != T_DIR){
@@ -624,11 +665,13 @@ namex(char *path, int nameiparent, char *name)
       return 0;
     }
     if(nameiparent && *path == '\0'){
-      // Stop one level early.
+      // Stop one level early, return
+      // inode of parent containing target
       iunlock(ip);
       return ip;
     }
     if((next = dirlookup(ip, name, 0)) == 0){
+      // Token not found in current directory
       iunlockput(ip);
       return 0;
     }
@@ -636,12 +679,14 @@ namex(char *path, int nameiparent, char *name)
     ip = next;
   }
   if(nameiparent){
+    // Called with empty path
     iput(ip);
     return 0;
   }
   return ip;
 }
 
+// Evaluate path and return the corresponding inode.
 struct inode*
 namei(char *path)
 {
@@ -649,6 +694,10 @@ namei(char *path)
   return namex(path, 0, name);
 }
 
+// Evaluate path and return the inode corresponding
+// to the parent directory of the target file, and
+// store the final token in the path traversal in
+// `name`
 struct inode*
 nameiparent(char *path, char *name)
 {

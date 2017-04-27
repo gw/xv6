@@ -35,8 +35,11 @@ argfd(int n, int *pfd, struct file **pf)
   return 0;
 }
 
-// Allocate a file descriptor for the given file.
+// Allocate a file descriptor for the given file,
+// by scanning proc's FD table and modifying the first
+// free entry.
 // Takes over file reference from caller on success.
+// Returns the FD int on success, -1 on error.
 static int
 fdalloc(struct file *f)
 {
@@ -114,6 +117,8 @@ sys_fstat(void)
 }
 
 // Create the path new as a link to the same inode as old.
+// Finds the inode for the parent directory of `new` and
+// appends a name->inode mapping with dirlink.
 int
 sys_link(void)
 {
@@ -130,6 +135,8 @@ sys_link(void)
   }
 
   ilock(ip);
+  // Don't create hard links to directories
+  // to avoid cycles
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
@@ -237,6 +244,7 @@ bad:
   return -1;
 }
 
+// Allocate a new inode for file or directory creation
 static struct inode*
 create(char *path, short type, short major, short minor)
 {
@@ -244,15 +252,21 @@ create(char *path, short type, short major, short minor)
   struct inode *ip, *dp;
   char name[DIRSIZ];
 
+  // Get inode of parent directory
   if((dp = nameiparent(path, name)) == 0)
     return 0;
   ilock(dp);
 
   if((ip = dirlookup(dp, name, &off)) != 0){
+    // Target already exists
     iunlockput(dp);
     ilock(ip);
     if(type == T_FILE && ip->type == T_FILE)
+      // `open()` syscall with O_CREATE just
+      // opens the file if it exists, creating
+      // if it doesn't.
       return ip;
+    // Not a file, so directory or device. Error.
     iunlockput(ip);
     return 0;
   }
@@ -260,6 +274,12 @@ create(char *path, short type, short major, short minor)
   if((ip = ialloc(dp->dev, type)) == 0)
     panic("create: ialloc");
 
+  // ialloc returns an unlocked inode pointer ip.
+  // Even though we already hold a lock on dp
+  // we can lock ip without worrying of deadlock
+  // because ip is freshly allocated--no other proc
+  // will be holding ip's lock and trying to lock
+  // dp.
   ilock(ip);
   ip->major = major;
   ip->minor = minor;
@@ -308,6 +328,7 @@ sys_open(void)
     }
     ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
+      // Trying to open directory for writing; error
       iunlockput(ip);
       end_op();
       return -1;
@@ -432,6 +453,9 @@ sys_pipe(void)
   fd0 = -1;
   if((fd0 = fdalloc(rf)) < 0 || (fd1 = fdalloc(wf)) < 0){
     if(fd0 >= 0)
+      // Write FD alloc failed,
+      // but Read FD alloc succeeded,
+      // so we clean up the corresponding entry.
       proc->ofile[fd0] = 0;
     fileclose(rf);
     fileclose(wf);

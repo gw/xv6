@@ -33,16 +33,20 @@
 // and to keep track in memory of logged block# before commit.
 struct logheader {
   int n;
+  // Sector numbers that correspond to dirty
+  // buffers in the buffer cache (see log_write
+  // below). These buffers get written to the
+  // on-disk write-ahead journal in write_log below.
   int block[LOGSIZE];
 };
 
 struct log {
   struct spinlock lock;
-  int start;
-  int size;
+  int start;       // block number of first log block (from superblock)
+  int size;        // number of logs in block (from superblock)
   int outstanding; // how many FS sys calls are executing.
   int committing;  // in commit(), please wait.
-  int dev;
+  int dev;         // device number
   struct logheader lh;
 };
 struct log log;
@@ -66,6 +70,7 @@ initlog(int dev)
 }
 
 // Copy committed blocks from log to their home location
+// Same function as log_write but with src and dst flipped.
 static void
 install_trans(void)
 {
@@ -122,6 +127,10 @@ recover_from_log(void)
 }
 
 // called at the start of each FS system call.
+// Waits until the logging system is not currently
+// committing, and until there is enough free space
+// to hold the writes from this call and all currently
+// executing system calls (as counted in log.outstanding).
 void
 begin_op(void)
 {
@@ -133,6 +142,10 @@ begin_op(void)
       // this op might exhaust log space; wait for commit.
       sleep(&log, &log.lock);
     } else {
+      // Reserve space and
+      // prevent a commit
+      // from occurring during
+      // this syscall.
       log.outstanding += 1;
       release(&log.lock);
       break;
@@ -162,26 +175,31 @@ end_op(void)
 
   if(do_commit){
     // call commit w/o holding locks, since not allowed
-    // to sleep with locks.
+    // to sleep with locks (bget acquires buffer sleeplocks).
+    // Setting log.committing above prevents other kernel threads
+    // from modifying the in-memory log.
     commit();
-    acquire(&log.lock);
+    acquire(&log.lock);  // Get lock to avoid missed wakeup
     log.committing = 0;
     wakeup(&log);
     release(&log.lock);
   }
 }
 
-// Copy modified blocks from cache to log.
+// Copy modified blocks from buffer cache to log on disk
 static void
 write_log(void)
 {
   int tail;
 
   for (tail = 0; tail < log.lh.n; tail++) {
+    // Get pointers to buffer cache entries corresponding
+    // to the log block on disk we're about to modify
+    // and to the dirty block in the buffer cache
     struct buf *to = bread(log.dev, log.start+tail+1); // log block
     struct buf *from = bread(log.dev, log.lh.block[tail]); // cache block
     memmove(to->data, from->data, BSIZE);
-    bwrite(to);  // write the log
+    bwrite(to);  // write the cached log block to disk
     brelse(from);
     brelse(to);
   }
@@ -194,8 +212,10 @@ commit()
     write_log();     // Write modified blocks from cache to log
     write_head();    // Write header to disk -- the real commit
     install_trans(); // Now install writes to home locations
+
+    // Erase the transaction from the log
     log.lh.n = 0;
-    write_head();    // Erase the transaction from the log
+    write_head();
   }
 }
 
@@ -219,14 +239,29 @@ log_write(struct buf *b)
     panic("log_write outside of trans");
 
   acquire(&log.lock);
+  // Log absorption: it's common for
+  // the same block to be written
+  // multiple times in the same
+  // transaction--we want to re-use
+  // the same log block to save space
+  // in the log and so that multiple edits
+  // are combined into one disk I/O operation.
   for (i = 0; i < log.lh.n; i++) {
-    if (log.lh.block[i] == b->blockno)   // log absorbtion
+    if (log.lh.block[i] == b->blockno)
       break;
   }
+  // At this point, i either refers
+  // to the already-existing log block
+  // corresponding to this buffer
+  // (i.e. this buffer has already
+  // been edited in this transaction)
+  // or is log.lh.n
   log.lh.block[i] = b->blockno;
+
   if (i == log.lh.n)
     log.lh.n++;
+
   b->flags |= B_DIRTY; // prevent eviction
+
   release(&log.lock);
 }
-
