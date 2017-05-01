@@ -16,16 +16,16 @@ struct file {
 struct inode {
   uint dev;           // Device number
   uint inum;          // Inode number
-  int ref;            // Reference count
+  int ref;            // num open FDs / proc->cwd's referring to it
   struct sleeplock lock;
   int flags;          // I_VALID
 
   short type;         // copy of disk inode
   short major;
   short minor;
-  short nlink;
+  short nlink;        // num hard links
   uint size;
-  uint addrs[NDIRECT+1];
+  uint addrs[NDIRECT+2];
 };
 #define I_VALID 0x2
 

@@ -52,7 +52,7 @@ bzero(int dev, int bno)
 
 // Blocks.
 
-// Allocate a zeroed disk block.
+// Allocate a zeroed disk block and return it, unlocked.
 static uint
 balloc(uint dev)
 {
@@ -333,8 +333,8 @@ iput(struct inode *ip)
     // inode has no links and no other references: truncate and free.
     release(&icache.lock);
     itrunc(ip);
-    ip->type = 0;
-    iupdate(ip);
+    ip->type = 0;  // Why don't we just do this in itrunc?
+    iupdate(ip);   // ...and avoid the need for this iupdate call?
     acquire(&icache.lock);
     ip->flags = 0;
   }
@@ -358,29 +358,74 @@ iunlockput(struct inode *ip)
 // are listed in ip->addrs[].  The next NINDIRECT blocks are
 // listed in block ip->addrs[NDIRECT].
 
-// Return the disk block address of the nth block in inode ip.
-// If there is no such block, bmap allocates one.
+// Return the disk block address of the nth logical block in inode ip.
+// If there is no such block, bmap allocates one. Since bmap eagerly
+// allocates like this, it's important for callers to be careful with bn
+// if they don't want unexpected block allocations. See `readi` below.
+
+// Note that bmap doesn't call iupdate--the caller must detect if
+// bmap allocated blocks and then call it themselves (see writei below).
 static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
   struct buf *bp;
 
+  // Direct block
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0)
+      // Logical block not yet allocated
       ip->addrs[bn] = addr = balloc(ip->dev);
     return addr;
   }
+
   bn -= NDIRECT;
 
+  // Indirect block
   if(bn < NINDIRECT){
-    // Load indirect block, allocating if necessary.
     if((addr = ip->addrs[NDIRECT]) == 0)
+      // Indirect block itself not yet allocated
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+
+    // Read+lock indirect block
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
+
     if((addr = a[bn]) == 0){
+      // Logical block not yet allocated
       a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+
+  bn -= NINDIRECT;
+
+  // Double-indirect block
+  if (bn < NINDIRECT*NINDIRECT) {
+    if((addr = ip->addrs[NDIRECT + 1]) == 0)
+      // First double-indirect block not yet allocated
+      ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+
+    // Read+lock first double-indirect block
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    if((addr = a[bn / NINDIRECT]) == 0) {
+      // Second double-indirect block not yet allocated
+      a[bn / NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+
+    // Read+lock second double-indirect block
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    if((addr = a[bn % NINDIRECT]) == 0) {
+      // Logical block not yet allocated
+      a[bn % NINDIRECT] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);
@@ -456,6 +501,9 @@ readi(struct inode *ip, char *dst, uint off, uint n)
   if(off > ip->size || off + n < off)
     return -1;
   if(off + n > ip->size)
+    // User tried to read past end of file.
+    // This would cause `bmap` to allocate blocks
+    // to accomodate. We don't want that.
     n = ip->size - off;
 
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
